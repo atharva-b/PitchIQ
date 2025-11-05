@@ -3,6 +3,7 @@ Target Variable - pitch_type
     -> want to be able to predict which of these pitches will be thrown next
 
 Features:
+pitch_type (of the last pitch) -- important factor in sequencing
 release_speed (of the last pitch) -- velocity value of the last pitch thrown (MPH) 
 batter -- ID of the batter
 stand (handedness of the hitter) -- either L or R
