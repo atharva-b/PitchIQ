@@ -13,7 +13,7 @@
 
 `balls` & `strikes` (what's the count): `range[0, 4]` for balls, `range[0, 3]` for strikes -- numerical
 
-`on\_3b`, `on\_2b`, `on\_1b` (just to determine if anyone is on base): bool value for on-base -- categorical
+`on_3b`, `on_2b`, `on_1b` (just to determine if anyone is on base): bool value for on-base -- categorical
 
 `outs_when_up`: range[0, 3] -- numerical 
 
