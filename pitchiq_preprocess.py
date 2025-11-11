@@ -71,7 +71,6 @@ class PreprocessData :
 
         self.create_lag_columns()
 
-        # TODO: drop here if needed, remove if not
         one_hot_columns = [c for c in self.lag_columns if c.startswith('prev_pitch_type_lag')] + ['stand', 'p_throws']
         data = pd.get_dummies(data, columns=one_hot_columns)
 

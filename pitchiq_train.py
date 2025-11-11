@@ -44,8 +44,10 @@ class ModelTrainer:
         )
         print("Creating model...")
         self.model.fit(X_train, y_train)
-        print("Saving model...")
-        joblib.dump(self.model, 'models/random_forest_pitchiq.pkl')
+
+    def save_model(self, filename: str ='random_forest_pitchiq.pkl') -> None:
+        joblib.dump(self.model, f'models/{filename}')
+        print(f"Saved model to models/{filename}")
 
     def evaluate_model(self) -> None:
         X_test = self.test.drop(columns=['pitch_type', 'game_date'])
@@ -74,6 +76,7 @@ class ModelTrainer:
     def run(self) -> None:
         self.train_test_split()
         self.train_model()
+        self.save_model()
         self.evaluate_model()
 
 if __name__ == "__main__":
