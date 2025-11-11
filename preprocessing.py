@@ -35,21 +35,21 @@ data = pd.get_dummies(data, columns=['prev_pitch_type', 'stand', 'p_throws']) # 
 data['runners_on'] = data[['on_1b', 'on_2b', 'on_3b']].sum(axis=1)
 
 # numerical feature processing
-numerical_cols = ['release_speed', 'release_spin_rate', 'prev_release_speed', 'prev_release_spin_rate', 
+numerical_cols = ['prev_release_speed', 'prev_release_spin_rate', 
     'balls', 'strikes', 'outs_when_up', 'at_bat_number', 'pitch_number', 'pitcher_days_since_prev_game',
     'run_diff', 'runners_on']
 
 scaler = StandardScaler()
 data[numerical_cols] = scaler.fit_transform(data[numerical_cols])
 
-keep_cols = [
-    'pitch_type', 'release_speed', 'release_spin_rate',
-    'balls', 'strikes', 'outs_when_up', 'inning', 'p_throws', 'stand',
+keep_cols = ['pitch_type', 'game_date', 'balls', 'strikes', 'outs_when_up', 'inning', 'p_throws', 'stand',
     'at_bat_number', 'pitch_number',
-    'pitcher_days_since_prev_game', 'run_diff', 'runners_on'
+    'pitcher_days_since_prev_game', 'run_diff', 'runners_on',
     'prev_pitch_type', 'prev_release_speed', 'prev_release_spin_rate'
 ]
-data = data[[col for col in keep_cols if col in data.columns]]
+prefixes = ['prev_pitch_type_', 'stand_', 'p_throws_']
+extra_cols = [c for c in data.columns if any(c.startswith(p) for p in prefixes)]
+data = data[[col for col in keep_cols if col in data.columns] + extra_cols]
 
 data.to_csv(f"pitcher_data/{lastname}_processed.csv", index=False)
 
