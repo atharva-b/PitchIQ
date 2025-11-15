@@ -58,7 +58,7 @@ class PreprocessData :
             df[lag_col_name] = (
                 df.groupby(group_cols)['pitch_type']
                 .shift(lag)
-                .fillna('None')   # keep instead of dropping
+                .fillna('NoPrevPitch')   # keep instead of dropping
             )
             self.lag_columns.append(lag_col_name)
     
@@ -71,6 +71,8 @@ class PreprocessData :
 
         self.create_lag_columns()
 
+        data = data.dropna(subset=['pitch_type'])
+
         one_hot_columns = [c for c in self.lag_columns if c.startswith('prev_pitch_type_lag')] + ['stand', 'p_throws']
         data = pd.get_dummies(data, columns=one_hot_columns)
 
@@ -78,7 +80,7 @@ class PreprocessData :
 
         numerical_cols = ['prev_release_speed', 'prev_release_spin_rate', 
             'balls', 'strikes', 'outs_when_up', 'at_bat_number', 'pitch_number',
-            'run_diff', 'runners_on']
+            'run_diff', 'runners_on', 'inning']
 
         scaler = StandardScaler()
         data[numerical_cols] = scaler.fit_transform(data[numerical_cols])
