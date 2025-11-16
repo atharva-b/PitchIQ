@@ -106,30 +106,119 @@ class ModelTrainer:
         joblib.dump(self.model, f'models/{filename}')
         print(f"Saved model to models/{filename}")
 
-    def evaluate_model(self, show_plot:bool =False) -> None:
+    def evaluate_model(self, show_plot: bool = False) -> None:
         X_test = self.test.drop(columns=['pitch_type', 'game_date'])
         y_test = self.test['pitch_type']
+        y_train = self.train['pitch_type']
+
+        print("\n===== MODEL PERFORMANCE =====")
+        self._print_basic_metrics(X_test, y_test)
+        self._print_top_k_accuracy(X_test, y_test, k=2)
+
+        print("\n===== BASELINE COMPARISONS =====")
+        self._print_baseline_most_frequent(y_test, y_train)
+        self._print_baseline_last_pitch(y_test)
+        self._print_baseline_count_only(y_test, y_train)
+
+        if show_plot:
+            print("\n===== CONFUSION MATRIX =====")
+            self._plot_confusion_matrix(X_test, y_test)
+
+    def _print_basic_metrics(self, X_test, y_test):
         y_pred = self.model.predict(X_test)
-        print(f"accuracy: {accuracy_score(y_test, y_pred):.4f}")
+        acc = accuracy_score(y_test, y_pred)
+        print(f"Accuracy: {acc:.4f}")
         print(classification_report(y_test, y_pred))
 
-        # Top 3 accuracy
+    def _print_top_k_accuracy(self, X_test, y_test, k=2):
         probs = self.model.predict_proba(X_test)
-        top2 = np.argsort(probs, axis=1)[:, -2:]
-        top2_accuracy = np.mean([y_test.iloc[i] in self.model.classes_[top2[i]] for i in range(len(y_test))])
-        print(f"Top-2 Accuracy: {top2_accuracy:.4f}")
+        top_k = np.argsort(probs, axis=1)[:, -k:]
+        top_k_acc = np.mean([
+            y_test.iloc[i] in self.model.classes_[top_k[i]]
+            for i in range(len(y_test))
+        ])
+        print(f"Top-{k} Accuracy: {top_k_acc:.4f}")
 
-        importances = pd.Series(self.model.feature_importances_, index=X_test.columns).sort_values(ascending=False)
-        print(importances.head(15))
+    def _print_baseline_most_frequent(self, y_test, y_train):
+        most_frequent = y_train.value_counts().idxmax()
+        baseline_acc = (y_test == most_frequent).mean()
+        print(f"Most Frequent Pitch Baseline: {baseline_acc:.4f}")
 
-        # create plot to show confusion matrix
-        if show_plot:
-            cm = confusion_matrix(y_test, y_pred, labels=self.model.classes_)
-            sns.heatmap(cm, annot=True, fmt='d', xticklabels=self.model.classes_, yticklabels=self.model.classes_)
-            plt.xlabel("Predicted")
-            plt.ylabel("Actual")
-            plt.title("Pitch type Confusion Matrix")
-            plt.show()
+    def _print_baseline_last_pitch(self, y_test):
+        lag_cols = [c for c in self.test.columns if c.startswith('prev_pitch_type_lag1_')]
+
+        if not lag_cols:
+            print("Last Pitch Baseline: N/A (no lag1 columns found)")
+            return
+
+        last_pitch = self.test[lag_cols].idxmax(axis=1)
+        last_pitch = last_pitch.str.replace("prev_pitch_type_lag1_", "", regex=False)
+
+        baseline_last = (last_pitch == y_test).mean()
+        print(f"Last Pitch Baseline Accuracy: {baseline_last:.4f}")
+
+    def _print_baseline_count_only(self, y_test, y_train):
+        from sklearn.linear_model import LogisticRegression
+
+        count_features = ['balls', 'strikes']
+        clf = LogisticRegression(max_iter=1000).fit(self.train[count_features], y_train)
+        preds = clf.predict(self.test[count_features])
+        acc = accuracy_score(y_test, preds)
+
+        print(f"Count-only Baseline Accuracy: {acc:.4f}")
+
+    def _plot_confusion_matrix(self, X_test, y_test):
+        y_pred = self.model.predict(X_test)
+        cm = confusion_matrix(y_test, y_pred, labels=self.model.classes_, normalize='true')
+
+        plt.figure(figsize=(8, 6))
+        sns.heatmap(
+            cm,
+            annot=True,
+            xticklabels=self.model.classes_,
+            yticklabels=self.model.classes_,
+            cmap="Blues",
+            fmt=".2f"
+        )
+        plt.xlabel("Predicted")
+        plt.ylabel("Actual")
+        plt.title("Normalized Confusion Matrix")
+        plt.show()
+
+    def show_permutation_importances(self, X_test, y_test):
+        from sklearn.inspection import permutation_importance
+
+        result = permutation_importance(
+            self.model,
+            X_test,
+            y_test,
+            n_repeats=10,
+            random_state=self.random_state
+        )
+
+        importances = (
+            pd.Series(result.importances_mean, index=X_test.columns)
+            .sort_values(ascending=False)
+        )
+
+        print(importances)
+
+    def show_partial_display_plot(self, X_test, pitch_type: str='FF'):
+        from sklearn.inspection import PartialDependenceDisplay
+        PartialDependenceDisplay.from_estimator(
+            self.model,
+            X_test,
+            ['balls', 'strikes', 'runners_on'],
+            target=pitch_type
+        )
+        plt.show()
+
+    def show_shap_analysis(self, X_test):
+        import shap
+        explainer = shap.TreeExplainer(self.model)
+        shap_values = explainer.shap_values(X_test)
+
+        shap.summary_plot(shap_values, X_test)
 
     def run(self, tune:bool =False, tuning_method:str ='grid') -> None:
         self.train_test_split()
