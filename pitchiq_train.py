@@ -5,6 +5,8 @@ import joblib
 import seaborn as sns
 import matplotlib.pyplot as plt
 import numpy as np
+from xgboost import XGBClassifier
+from sklearn.preprocessing import LabelEncoder
 
 class ModelTrainer:
 
@@ -19,7 +21,8 @@ class ModelTrainer:
         self.random_state = random_state
         self.min_samples_split = min_samples_split
         self.max_features = max_features
-        self.model: RandomForestClassifier | None = None
+        self.model: RandomForestClassifier| XGBClassifier | None = None
+        self.label_encoder = LabelEncoder()
         self.param_grid = {
             'n_estimators': [100, 200, 300, 400, 500],
             'max_depth': [5, 10, 15, 20, None],
@@ -39,8 +42,12 @@ class ModelTrainer:
         train_games = game_dates[:split_point]
         test_games = game_dates[split_point:]
 
-        self.train = self.data[self.data['game_date'].isin(train_games)]
-        self.test = self.data[self.data['game_date'].isin(test_games)]
+        self.train = self.data[self.data['game_date'].isin(train_games)].copy()
+        self.test = self.data[self.data['game_date'].isin(test_games)].copy()
+
+        # encoding pitch_type labels for XGBoost
+        self.train['pitch_type_encoded'] = self.label_encoder.fit_transform(self.train['pitch_type'])
+        self.test['pitch_type_encoded'] = self.label_encoder.transform(self.test['pitch_type'])
 
     def train_model(self) -> None:
         X_train = self.train.drop(columns=['pitch_type', 'game_date'])
@@ -54,6 +61,25 @@ class ModelTrainer:
             n_jobs=-1
         )
         print("Creating model...")
+        self.model.fit(X_train, y_train)
+
+    def train_xgboost(self):
+        X_train = self.train.drop(columns=['pitch_type', 'pitch_type_encoded', 'game_date'])
+        y_train = self.train['pitch_type_encoded']
+
+        self.model = XGBClassifier(
+            n_estimators=self.n_estimators,
+            max_depth=self.max_depth,
+            learning_rate=0.1,
+            subsample=0.9,
+            colsample_bytree=0.8,
+            objective='multi:softprob',
+            eval_metric='mlogloss',
+            random_state=self.random_state,
+            n_jobs=-1
+        )
+
+        print("Creating XGBoost model...")
         self.model.fit(X_train, y_train)
 
     def grid_search(self, cv:int =3, scoring: str ='accuracy', verbose:int | bool =1):
@@ -107,22 +133,130 @@ class ModelTrainer:
         print(f"Saved model to models/{filename}")
 
     def evaluate_model(self, show_plot: bool = False) -> None:
-        X_test = self.test.drop(columns=['pitch_type', 'game_date'])
-        y_test = self.test['pitch_type']
-        y_train = self.train['pitch_type']
+        """
+        Evaluate the trained model. This handles both:
+          - RandomForest trained on string labels
+          - XGBoost trained on integer-encoded labels (uses self.label_encoder)
+
+        It prints basic metrics, top-k accuracy, baselines and optionally shows plots.
+        """
+        # prepare test features and true labels (strings)
+        X_test = self.test.drop(columns=['pitch_type', 'pitch_type_encoded', 'game_date'], errors='ignore')
+        y_test = self.test['pitch_type'].astype(str)
 
         print("\n===== MODEL PERFORMANCE =====")
-        self._print_basic_metrics(X_test, y_test)
-        self._print_top_k_accuracy(X_test, y_test, k=2)
+        # compute y_pred (string labels) and y_proba (probabilities)
+        y_pred_str, y_proba = self._predict_and_proba(X_test)
+        self._print_basic_metrics_from_preds(y_test, y_pred_str)
+        self._print_top_k_accuracy_from_proba(y_test, y_proba, k=2)
 
         print("\n===== BASELINE COMPARISONS =====")
-        self._print_baseline_most_frequent(y_test, y_train)
+        self._print_baseline_most_frequent(y_test, self.train['pitch_type'])
         self._print_baseline_last_pitch(y_test)
-        self._print_baseline_count_only(y_test, y_train)
+        self._print_baseline_count_only(y_test, self.train['pitch_type'])
 
         if show_plot:
             print("\n===== CONFUSION MATRIX =====")
-            self._plot_confusion_matrix(X_test, y_test)
+            self._plot_confusion_matrix_from_preds(y_test, y_pred_str)
+
+    def _predict_and_proba(self, X):
+        """
+        Unified predict / predict_proba wrapper that returns:
+          - y_pred_str: predicted labels as strings (same domain as original pitch_type)
+          - y_proba: numpy array of shape (n_samples, n_classes) with probabilities
+        Handles both RF (string labels) and XGB (integer labels + self.label_encoder).
+        """
+        # Raw predictions from model
+        raw_pred = self.model.predict(X)
+
+        # Determine whether raw_pred is integer-encoded
+        if np.issubdtype(np.asarray(raw_pred).dtype, np.integer):
+            # assume label_encoder was fitted in train_test_split
+            try:
+                y_pred_str = self.label_encoder.inverse_transform(raw_pred)
+            except Exception:
+                # fallback: cast to str if decode fails
+                y_pred_str = raw_pred.astype(str)
+        else:
+            # already string labels
+            y_pred_str = raw_pred.astype(str)
+
+        # Build probability matrix
+        # model.classes_ indicates class ordering for predict_proba columns
+        try:
+            proba = self.model.predict_proba(X)
+        except Exception:
+            # If model does not support predict_proba, emulate one-hot from predictions
+            n = len(y_pred_str)
+            classes = self.model.classes_
+            proba = np.zeros((n, len(classes)))
+            # find index of each predicted class and set 1.0
+            for i, p in enumerate(raw_pred):
+                # if integer-coded, map via label_encoder to class index
+                if np.issubdtype(np.asarray(p).dtype, np.integer):
+                    # model.classes_ are likely integer labels too -> find index
+                    idx = np.where(self.model.classes_ == p)[0]
+                else:
+                    idx = np.where(self.model.classes_ == p)[0]
+                if idx.size:
+                    proba[i, idx[0]] = 1.0
+
+        # If model.classes_ are integer-coded, convert class ordering to string labels for downstream use
+        if np.issubdtype(np.asarray(self.model.classes_).dtype, np.integer):
+            try:
+                classes_str = self.label_encoder.inverse_transform(self.model.classes_)
+            except Exception:
+                classes_str = self.model.classes_.astype(str)
+        else:
+            classes_str = self.model.classes_.astype(str)
+
+        # Reorder proba columns to correspond to classes_str and return both
+        # We'll return proba and also attach classes_str as attribute for helper usage
+        proba_with_classes = proba  # columns correspond to self.model.classes_
+        # But callers may need classes_str -> return both
+        return y_pred_str, (proba_with_classes, classes_str)
+
+    def _print_basic_metrics_from_preds(self, y_true, y_pred_str):
+        print(f"Accuracy: {accuracy_score(y_true, y_pred_str):.4f}")
+        print(classification_report(y_true, y_pred_str, zero_division=0))
+
+    def _print_top_k_accuracy_from_proba(self, y_true, proba_and_classes, k=2):
+        """
+        proba_and_classes: tuple (proba_array, classes_str_array)
+        """
+        proba, classes_str = proba_and_classes
+        # get top-k column indices and map to string labels
+        top_k_idx = np.argsort(proba, axis=1)[:, -k:]
+        # map indices -> labels
+        top_k_labels = classes_str[top_k_idx]  # shape (n_samples, k)
+        # compute top-k accuracy
+        topk_correct = [
+            y_true.iloc[i] in top_k_labels[i]
+            for i in range(len(y_true))
+        ]
+        topk_acc = np.mean(topk_correct)
+        print(f"Top-{k} Accuracy: {topk_acc:.4f}")
+
+    def _plot_confusion_matrix_from_preds(self, y_true, y_pred_str):
+        cm = confusion_matrix(y_true, y_pred_str, labels=np.unique(np.concatenate([y_true.unique(), y_pred_str])))
+        labels = np.unique(np.concatenate([y_true.unique(), y_pred_str]))
+        plt.figure(figsize=(8, 6))
+        row_sums = cm.sum(axis=1, keepdims=True)
+        row_sums[row_sums == 0] = 1  # Avoid division by zero
+        cm_normalized = cm.astype(float) / row_sums
+        sns.heatmap(
+            cm_normalized,
+            annot=True,
+            xticklabels=labels,
+            yticklabels=labels,
+            cmap="Blues",
+            fmt=".2f"
+        )
+        plt.xlabel("Predicted")
+        plt.ylabel("Actual")
+        plt.title("Normalized Confusion Matrix")
+        plt.show()
+
 
     def _print_basic_metrics(self, X_test, y_test):
         y_pred = self.model.predict(X_test)
@@ -220,7 +354,7 @@ class ModelTrainer:
 
         shap.summary_plot(shap_values, X_test)
 
-    def run(self, tune:bool =False, tuning_method:str ='grid') -> None:
+    def run(self, tune:bool =False, tuning_method:str ='grid', model_type: str='xgb') -> None:
         self.train_test_split()
         if tune:
             if tuning_method == 'grid':
@@ -230,10 +364,13 @@ class ModelTrainer:
             else:
                 raise ValueError("Invalid tuning method, use grid or random")
         else:
-            self.train_model()
+            if model_type == 'xgb':
+                self.train_xgboost()
+            else:
+                self.train_model()
         self.evaluate_model(show_plot=True)
 
 if __name__ == "__main__":
     # these hyperparameters give ~57% accuracy
-    trainer = ModelTrainer(n_estimators=400, max_depth=10, min_samples_split=5, random_state=42)
-    trainer.run()
+    trainer = ModelTrainer()
+    trainer.run(model_type='xgb')
