@@ -7,6 +7,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 from xgboost import XGBClassifier
 from sklearn.preprocessing import LabelEncoder
+from sklearn.model_selection import RandomizedSearchCV
+from sklearn.model_selection import GridSearchCV
 
 class ModelTrainer:
 
@@ -28,6 +30,22 @@ class ModelTrainer:
             'max_depth': [5, 10, 15, 20, None],
             'min_samples_split': [2, 5, 10],
             'max_features': ['sqrt', 'log2', None],
+        }
+        self.xgb_param_dist = {
+            "n_estimators": [200, 300, 400, 600],
+            "max_depth": [3, 4, 5, 6, 8],
+            "learning_rate": [0.01, 0.05, 0.1, 0.2],
+            "subsample": [0.6, 0.8, 1.0],
+            "colsample_bytree": [0.5, 0.7, 0.9, 1.0],
+            "min_child_weight": [1, 3, 5, 7],
+            "gamma": [0, 0.1, 0.2, 0.3],
+        }
+        self.xgb_param_grid = {
+            "max_depth": [3, 5, 7],
+            "learning_rate": [0.05, 0.1],
+            "subsample": [0.8, 1.0],
+            "colsample_bytree": [0.7, 1.0],
+            "n_estimators": [300, 500]
         }
         
         if df is not None:
@@ -80,10 +98,14 @@ class ModelTrainer:
         )
 
         print("Creating XGBoost model...")
-        self.model.fit(X_train, y_train)
+        self.model.fit(
+            X_train, y_train,
+            eval_set=[(X_train, y_train)],
+            early_stopping_rounds=20,
+            verbose=False,
+        )
 
     def grid_search(self, cv:int =3, scoring: str ='accuracy', verbose:int | bool =1):
-        from sklearn.model_selection import GridSearchCV
         self.train_test_split()
         X_train = self.train.drop(columns=['pitch_type', 'game_date'])
         y_train = self.train['pitch_type']
@@ -96,8 +118,7 @@ class ModelTrainer:
             n_jobs=-1
         )
         print("Tuning model using GridSearchCV...")
-        print(self.train['pitch_type'].unique())
-        print(self.train['game_date'].map(type).unique())
+
         grid.fit(X_train, y_train)
         print(f"Best parameters: {grid.best_params_}")
         print(f"Best score: {grid.best_score_:.4f}")
@@ -105,7 +126,6 @@ class ModelTrainer:
         self.save_model(filename="random_forest_pitchiq_tuned.pkl")
 
     def random_search(self, n_iter:int =20, cv:int =3, scoring: str ='accuracy', verbose:int | bool =1):
-        from sklearn.model_selection import RandomizedSearchCV
         self.train_test_split()
         X_train = self.train.drop(columns=['pitch_type', 'game_date'])
         y_train = self.train['pitch_type']
@@ -120,13 +140,71 @@ class ModelTrainer:
             random_state=self.random_state
         )
         print("Tuning model using RandomizedSearchCV...")
-        print(self.train['pitch_type'].unique())
-        print(self.train['game_date'].map(type).unique())
+
         rand.fit(X_train, y_train)
         print(f"Best parameters: {rand.best_params_}")
         print(f"Best score: {rand.best_score_:.4f}")
         self.model = rand.best_estimator_
         self.save_model(filename="random_forest_pitchiq_tuned.pkl")
+
+    def random_search_xgboost(self, n_iter:int=25, cv:int=3, scoring: str ='accuracy', verbose:int | bool =1):
+        print("Running random search with XGBoost...")
+        self.train_test_split()
+        X_train = self.train.drop(columns=['pitch_type', 'pitch_type_encoded', 'game_date'])
+        y_train = self.train['pitch_type_encoded']
+
+        xgb = XGBClassifier(
+            objective='multi:softprob',
+            eval_metric='mlogloss',
+            random_state=self.random_state,
+            n_jobs=-1
+        )
+
+        rand = RandomizedSearchCV(
+            estimator=xgb,
+            param_distributions=self.xgb_param_dist,
+            n_iter=n_iter,
+            cv=cv,
+            verbose=verbose,
+            scoring=scoring,
+            random_state=self.random_state,
+            n_jobs=-1
+        )
+
+        rand.fit(X_train, y_train)
+
+        print(f"Best parameters: {rand.best_params_}")
+        print(f"Best score: {rand.best_score_:.4f}")
+        self.model = rand.best_estimator_
+        self.save_model(filename="xgb_pitchiq_tuned.pkl")
+
+    def grid_search_xgboost(self, cv:int =3, scoring: str ='accuracy', verbose:int | bool =1):
+        print("Running grid search with XGBoost...")
+        self.train_test_split()
+        X_train = self.train.drop(columns=['pitch_type', 'pitch_type_encoded', 'game_date'])
+        y_train = self.train['pitch_type_encoded']
+
+        xgb = XGBClassifier(
+            objective='multi:softprob',
+            eval_metric='mlogloss',
+            random_state=self.random_state,
+            n_jobs=-1
+        )
+
+        grid = GridSearchCV(
+            estimator=xgb,
+            param_grid=self.xgb_param_grid,
+            cv=cv,
+            scoring=scoring,
+            verbose=verbose,
+            n_jobs=-1
+        )
+        grid.fit(X_train, y_train)
+        print(f"Best parameters: {grid.best_params_}")
+        print(f"Best score: {grid.best_score_:.4f}")
+        self.model = grid.best_estimator_
+        self.save_model(filename="xgb_pitchiq_tuned.pkl")
+
 
     def save_model(self, filename: str ='random_forest_pitchiq.pkl') -> None:
         joblib.dump(self.model, f'models/{filename}')
@@ -354,23 +432,32 @@ class ModelTrainer:
 
         shap.summary_plot(shap_values, X_test)
 
-    def run(self, tune:bool =False, tuning_method:str ='grid', model_type: str='xgb') -> None:
+    def run(self, tune=False, tuning_method='grid', model_type='xgb'):
         self.train_test_split()
+
         if tune:
-            if tuning_method == 'grid':
-                self.grid_search()
-            elif tuning_method == 'random':
-                self.random_search()
+            if model_type == 'xgb':
+                if tuning_method == 'grid':
+                    self.grid_search_xgboost()
+                elif tuning_method == 'random':
+                    self.random_search_xgboost()
+                else:
+                    raise ValueError("Invalid tuning method for XGBoost.")
             else:
-                raise ValueError("Invalid tuning method, use grid or random")
+                # RF tuning
+                if tuning_method == 'grid':
+                    self.grid_search()
+                elif tuning_method == 'random':
+                    self.random_search()
         else:
             if model_type == 'xgb':
                 self.train_xgboost()
             else:
                 self.train_model()
+
         self.evaluate_model(show_plot=True)
 
 if __name__ == "__main__":
     # these hyperparameters give ~57% accuracy
-    trainer = ModelTrainer()
-    trainer.run(model_type='xgb')
+    trainer = ModelTrainer(random_state=42)
+    trainer.run(tune=True, tuning_method="random", model_type='RF')
